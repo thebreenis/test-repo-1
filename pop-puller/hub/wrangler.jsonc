@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gfw8-pop-puller-hub",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-20",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  }
+}
