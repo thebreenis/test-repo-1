@@ -19,7 +19,7 @@ using Gfw8Sharing;
 
 namespace Gfw8PopPuller {
  static class AppFiles {
-  internal const string Version = "0.1.25";
+  internal const string Version = "0.1.26";
   internal static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GFW8PopPuller");
   internal static readonly string DownloadsRoot = Path.Combine(Root, "Downloads");
   internal static readonly string HubUrl = "https://gfw8-pop-puller-hub.alec2dabreen.workers.dev";

@@ -60,7 +60,7 @@ def main():
                     '/reference:System.Net.Http.dll', '/reference:System.IO.Compression.dll',
                     '/resource:' + str(payload) + ',PopPuller.Payload',
                     '/resource:' + str(HERE / 'PopPuller.ico') + ',PopPuller.Icon', '/out:' + str(exe),
-                    str(HERE / 'PopPuller.cs'), str(HERE / 'HubClient.cs'), str(HERE / 'Runtime.cs'),
+                    str(HERE / 'PopPuller.cs'), str(HERE / 'HubClient.cs'), str(HERE / 'Runtime.cs'), str(HERE / 'Updater.cs'),
                     str(MAIN / 'src/sharing/ShareCrypto.cs'), str(assembly)], check=True)
     verified = HERE / 'build/verified.json'
     subprocess.run([str(exe), '--verify-bundle', str(verified)], check=True)
@@ -71,7 +71,7 @@ def main():
     (OUT / 'SHA256SUMS.txt').write_text(sha(exe) + '  ' + exe.name + '\n', encoding='ascii')
     source = OUT / ('GFW8-Pop-Puller-Source-v' + VERSION + '.zip')
     with zipfile.ZipFile(source, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for name in ('PopPuller.cs', 'HubClient.cs', 'Runtime.cs', 'build.py', 'make_icon.py', 'PopPuller.ico', 'Issue-Code.ps1'):
+        for name in ('PopPuller.cs', 'HubClient.cs', 'Runtime.cs', 'Updater.cs', 'build.py', 'make_icon.py', 'PopPuller.ico', 'Issue-Code.ps1'):
             archive.write(HERE / name, 'pop-puller/' + name)
         for name in ('src/sharing/ShareCrypto.cs', 'src/ui/App.ico'):
             archive.write(MAIN / name, 'main-snapshot/' + name)

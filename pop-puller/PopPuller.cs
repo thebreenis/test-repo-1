@@ -23,17 +23,21 @@ namespace Gfw8PopPuller {
     AppContext.SetSwitch("Switch.System.Net.DontEnableSystemDefaultTlsVersions", false);
     AppContext.SetSwitch("Switch.System.Net.DontEnableSchUseStrongCrypto", false);
     ServicePointManager.SecurityProtocol = SecurityProtocolType.SystemDefault;
+    if (args.Length > 0 && args[0] == "--apply-update") return PopPullerUpdater.Apply(args);
     if (args.Length == 2 && args[0] == "--verify-bundle") {
      string runtime = AppFiles.Unpack();
      File.WriteAllText(Path.GetFullPath(args[1]), Wire.Json.Serialize(new { verified = true, runtime, version = AppFiles.Version }));
      return 0;
     }
-    if (args.Length == 1 && args[0] == "--self-test") return new ReceiptBackend(AppFiles.Unpack()).Games().Length == 108 && AppFiles.TestPopWriting() && PopRefreshPolicy.SelfTest() ? 0 : 2;
+    if (args.Length == 1 && args[0] == "--self-test") return new ReceiptBackend(AppFiles.Unpack()).Games().Length == 108 && AppFiles.TestPopWriting() && PopRefreshPolicy.SelfTest() && PopPullerUpdater.SelfTest() ? 0 : 2;
     Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
     bool acquired;
     using (var mutex = new Mutex(true, "Local\\GFW8PopPuller-" + WindowsIdentity.GetCurrent().User.Value, out acquired)) {
      if (!acquired) { MetroDialog.ShowMessage(null, "GFW8 Pop Puller", "GFW8 Pop Puller is already running in the system tray or on the desktop."); return 1; }
-     try { Application.Run(new MainForm(AppFiles.Unpack(), args.Contains("--minimized"))); }
+     string updateAck = null;
+     int ackIndex = Array.IndexOf(args, "--update-ack");
+     if (ackIndex >= 0 && ackIndex + 1 < args.Length) updateAck = args[ackIndex + 1];
+     try { Application.Run(new MainForm(AppFiles.Unpack(), args.Contains("--minimized"), updateAck)); }
      finally { mutex.ReleaseMutex(); }
     }
     return 0;
@@ -234,14 +238,19 @@ namespace Gfw8PopPuller {
   readonly TextBox search = new TextBox();
   readonly FlowLayoutPanel gameList = new FlowLayoutPanel();
   readonly RichTextBox activity = new RichTextBox();
-  readonly Button getPop, openPopFolder, watchButton, scanButton, allButton, availableButton, unownedButton, codeButton;
+  readonly Button getPop, openPopFolder, watchButton, scanButton, allButton, availableButton, unownedButton, onlyMineButton, codeButton;
   readonly NotifyIcon tray;
   readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
   readonly ToolTip tips = new ToolTip();
+  readonly Button updateButton = new Button();
   int selectedGame;
   int activeUsers;
-  bool onlyAvailable, onlyUnowned, exiting, scanning, requesting, autoRequesting;
+  bool onlyAvailable, onlyUnowned, onlyMine, exiting, scanning, requesting, autoRequesting;
+  bool checkingUpdate, applyingUpdate;
   bool everConnected;
+  PopPullerRelease availableUpdate;
+  string announcedUpdate = "";
+  DateTime nextUpdateCheckUtc = DateTime.MaxValue;
   DateTime connectionAttemptSince = DateTime.MinValue;
 
   static readonly Color Background = Color.FromArgb(33, 8, 40);
@@ -251,17 +260,17 @@ namespace Gfw8PopPuller {
   static readonly Color Muted = Color.FromArgb(57, 42, 66);
   static readonly Color TokenIssueRed = Color.FromArgb(156, 39, 50);
   static readonly HashSet<int> KnownTokenIssueGames = new HashSet<int> { 71, 72 };
-  const string TokenIssueTooltip = "Known Xbox token issue\n" +
+  const string TokenIssueTooltip = "Known Xbox token issue!\n" +
    "This game can serve a valid pop.bin, but Xbox Live\n" +
    "does not issue a valid token.\n\n" +
-   "Xbox sign-in and achievement will not work.\n" +
+   "Xbox sign-in and achievements will not work.\n" +
    "You can still request a pop.bin in case Microsoft\n" +
    "fixes this in the future.";
 
-  public MainForm(string runtime, bool minimized) {
+  public MainForm(string runtime, bool minimized, string updateAck = null) {
    preferences = Preferences.Load(); backend = new ReceiptBackend(runtime); hub = new HubClient(preferences, backend);
    tips.AutoPopDelay = 20000;
-   bool trayStartup = minimized && preferences.StartAtLogin && preferences.CloseToTray;
+   bool trayStartup = minimized && preferences.CloseToTray;
    Text = "GFW8 Pop Puller"; BackColor = Background; ForeColor = Color.White;
    Font = new Font("Segoe UI", 10); FormBorderStyle = FormBorderStyle.None;
    if (trayStartup) { Opacity = 0; ShowInTaskbar = false; }
@@ -311,11 +320,12 @@ namespace Gfw8PopPuller {
    catalogue.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
    catalogue.RowStyles.Add(new RowStyle(SizeType.Absolute, 43));
    root.Controls.Add(catalogue, 0, 3);
-   var tools = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 1, Margin = new Padding(0) };
+   var tools = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 7, RowCount = 1, Margin = new Padding(0) };
    tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
    tools.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
    tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 158));
    tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 75));
+   tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
    tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
    tools.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
    var title = new Label { Text = "Games", Dock = DockStyle.Fill, Font = new Font("Segoe UI Light", 22), TextAlign = ContentAlignment.MiddleLeft };
@@ -325,9 +335,10 @@ namespace Gfw8PopPuller {
    search.HandleCreated += delegate { SetSearchCue(search.Handle, "Search for a game..."); };
    tips.SetToolTip(search, "Search all 108 games"); tools.Controls.Add(search, 1, 0);
    scanButton = Action("Scan My Licenses", Violet); scanButton.Click += async delegate { await Scan(); }; tools.Controls.Add(scanButton, 2, 0);
-   allButton = Action("All", Teal); allButton.Click += delegate { onlyAvailable = false; onlyUnowned = false; UpdateFilters(); RenderGames(); }; tools.Controls.Add(allButton, 3, 0);
-   availableButton = Action("Available", Panel); availableButton.Click += delegate { onlyAvailable = !onlyAvailable; if (!onlyAvailable) onlyUnowned = false; UpdateFilters(); RenderGames(); }; tools.Controls.Add(availableButton, 4, 0);
-   unownedButton = Action("Unowned", Panel); unownedButton.Click += delegate { onlyUnowned = !onlyUnowned; if (onlyUnowned) onlyAvailable = true; UpdateFilters(); RenderGames(); }; tools.Controls.Add(unownedButton, 5, 0);
+   allButton = Action("All", Teal); allButton.Click += delegate { onlyAvailable = false; onlyUnowned = false; onlyMine = false; UpdateFilters(); RenderGames(); }; tools.Controls.Add(allButton, 3, 0);
+   availableButton = Action("Available", Panel); availableButton.Click += delegate { onlyAvailable = !onlyAvailable; if (!onlyAvailable) onlyUnowned = false; onlyMine = false; UpdateFilters(); RenderGames(); }; tools.Controls.Add(availableButton, 4, 0);
+   unownedButton = Action("Unowned", Panel); unownedButton.Click += delegate { onlyUnowned = !onlyUnowned; if (onlyUnowned) onlyAvailable = true; onlyMine = false; UpdateFilters(); RenderGames(); }; tools.Controls.Add(unownedButton, 5, 0);
+   onlyMineButton = Action("Only Mine", Panel); onlyMineButton.Click += delegate { onlyMine = !onlyMine; if (onlyMine) { onlyAvailable = false; onlyUnowned = false; } UpdateFilters(); RenderGames(); }; tools.Controls.Add(onlyMineButton, 6, 0);
    catalogue.Controls.Add(tools, 0, 0);
 
    gameList.Dock = DockStyle.Fill; gameList.AutoScroll = true; gameList.WrapContents = true; gameList.FlowDirection = FlowDirection.LeftToRight;
@@ -354,15 +365,20 @@ namespace Gfw8PopPuller {
    activity.Margin = new Padding(12, 7, 0, 5);
    logPanel.Controls.Add(activity, 1, 0); root.Controls.Add(logPanel, 0, 4);
 
-   var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Padding = new Padding(16, 0, 16, 0), Margin = new Padding(0) };
+   var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 1, Padding = new Padding(16, 0, 16, 0), Margin = new Padding(0) };
    footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
    footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+   footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
    footer.Controls.Add(new Label { Text = "Alec Breen | TheBreenis", AutoSize = true, ForeColor = Color.FromArgb(201, 184, 209), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
    var github = new LinkLabel { Text = "github.com/thebreenis ↗", LinkColor = Color.FromArgb(126, 227, 238), ActiveLinkColor = Color.White, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(12, 0, 0, 0) };
    github.LinkClicked += delegate { Process.Start("https://github.com/thebreenis"); }; footer.Controls.Add(github, 1, 0);
    var help = new LinkLabel { Text = "Help", LinkColor = Color.FromArgb(126, 227, 238), ActiveLinkColor = Color.White, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(18, 0, 0, 0) };
    help.LinkClicked += delegate { ShowHelp(); }; footer.Controls.Add(help, 2, 0);
-   footer.Controls.Add(new Label { Text = "v" + AppFiles.Version, AutoSize = true, ForeColor = Color.FromArgb(177, 156, 186), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight }, 3, 0);
+   updateButton.Text = "Update available"; updateButton.Width = 132; updateButton.Height = 26;
+   updateButton.Margin = new Padding(4, 3, 12, 3); updateButton.BackColor = Violet; updateButton.ForeColor = Color.White;
+   updateButton.FlatStyle = FlatStyle.Flat; updateButton.FlatAppearance.BorderSize = 0; updateButton.Visible = false;
+   updateButton.Click += delegate { ShowUpdateDialog(false); }; footer.Controls.Add(updateButton, 3, 0);
+   footer.Controls.Add(new Label { Text = "v" + AppFiles.Version, AutoSize = true, ForeColor = Color.FromArgb(177, 156, 186), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight }, 4, 0);
    root.Controls.Add(footer, 0, 5);
 
    foreach (var raw in backend.Games()) {
@@ -377,6 +393,7 @@ namespace Gfw8PopPuller {
    trayMenu.Items.Add("Close", null, delegate { exiting = true; Close(); });
    tray = new NotifyIcon { Icon = Icon, Text = "GFW8 Pop Puller", ContextMenuStrip = trayMenu, Visible = true };
    tray.DoubleClick += delegate { OpenWindow(); };
+   tray.BalloonTipClicked += delegate { if (availableUpdate != null && tray.BalloonTipTitle == "Update available") { OpenWindow(); ShowUpdateDialog(true); } };
    hub.Activity += Log;
    hub.ConnectionChanged += value => Ui(() => {
     if (value) { everConnected = true; connectionAttemptSince = DateTime.MinValue; }
@@ -407,8 +424,23 @@ namespace Gfw8PopPuller {
     hubPeak.Text = PeakText(usersHigh, usersDay, "user", "users");
    });
    hub.OwnCountChanged += count => Ui(RenderGames);
-   timer.Interval = 1000; timer.Tick += delegate { UpdateRefresh(); UpdateHubStatus(); CheckWatchExpiries(); }; timer.Start();
-   Shown += delegate { if (trayStartup) { Hide(); Opacity = 1; ShowInTaskbar = true; } SaveSettings(); connectionAttemptSince = DateTime.UtcNow; UpdateHubStatus(); hub.Start(); Log("GFW8 Pop Puller started. Hub access is limited to individual codes."); if (!trayStartup && preferences.Code.Length == 0) BeginInvoke((Action)SetCode); };
+   timer.Interval = 1000; timer.Tick += delegate {
+    UpdateRefresh(); UpdateHubStatus(); CheckWatchExpiries();
+    if (DateTime.UtcNow >= nextUpdateCheckUtc) { nextUpdateCheckUtc = DateTime.UtcNow.AddHours(6); var work = CheckForUpdates(); }
+   }; timer.Start();
+   Shown += delegate {
+    if (trayStartup) { Hide(); Opacity = 1; ShowInTaskbar = true; }
+    SaveSettings(); connectionAttemptSince = DateTime.UtcNow; UpdateHubStatus(); hub.Start();
+    Log("GFW8 Pop Puller started. Hub access is limited to individual codes.");
+    string updateError = PopPullerUpdater.TakeError();
+    if (updateError.Length > 0) {
+     Log("Update needs attention: " + updateError);
+     tray.ShowBalloonTip(8000, "Update failed", "The previous version was kept. Open Pop Puller for details.", ToolTipIcon.Warning);
+    }
+    if (updateAck != null) try { File.WriteAllText(updateAck, AppFiles.Version); } catch (Exception e) { Log("Could not confirm update startup: " + e.Message); }
+    nextUpdateCheckUtc = DateTime.UtcNow.AddSeconds(10);
+    if (!trayStartup && preferences.Code.Length == 0) BeginInvoke((Action)SetCode);
+   };
    FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!exiting && preferences.CloseToTray && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
    FormClosed += delegate { timer.Stop(); tray.Visible = false; tray.Dispose(); hub.Stop(); hub.Dispose(); };
   }
@@ -498,7 +530,8 @@ namespace Gfw8PopPuller {
    foreach (var game in games) game.Button.Width = width;
   }
   string GameStatus(int id) {
-   if (available.Contains(id)) return hub.IsOwned(id) ? "Your license" : "Available now";
+   if (hub.IsOwned(id)) return "Your license";
+   if (available.Contains(id)) return "Available now";
    string day;
    if (!lastSeen.TryGetValue(id, out day)) return "Last Seen: Never";
    DateTime date;
@@ -512,12 +545,13 @@ namespace Gfw8PopPuller {
    gameList.SuspendLayout(); gameList.Controls.Clear();
    foreach (var game in games) {
     bool lit = available.Contains(game.Id);
-    if ((onlyAvailable && !lit) || (onlyUnowned && hub.IsOwned(game.Id)) || game.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
+    bool owned = hub.IsOwned(game.Id);
+    if ((onlyAvailable && !lit) || (onlyUnowned && owned) || (onlyMine && !owned) || game.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
     var button = game.Button;
     int count; game.ProviderCount = lit && providerCounts.TryGetValue(game.Id, out count) ? count : 0;
     bool tokenIssue = KnownTokenIssueGames.Contains(game.Id);
-    button.BackColor = tokenIssue ? TokenIssueRed : lit && hub.IsOwned(game.Id) ? Color.FromArgb(24, 91, 175) : lit ? Color.FromArgb(7, 93, 103) : lastSeen.ContainsKey(game.Id) ? Color.FromArgb(130, 69, 26) : Muted;
-    button.ForeColor = tokenIssue || lit ? Color.White : Color.FromArgb(210, 198, 215);
+    button.BackColor = tokenIssue ? TokenIssueRed : owned ? Color.FromArgb(24, 91, 175) : lit ? Color.FromArgb(7, 93, 103) : lastSeen.ContainsKey(game.Id) ? Color.FromArgb(130, 69, 26) : Muted;
+    button.ForeColor = tokenIssue || lit || owned ? Color.White : Color.FromArgb(210, 198, 215);
     button.Text = (watchlist.Games.Contains(game.Id) ? "★  " : tokenIssue ? "⚠  " : "●  ") + game.Name + Environment.NewLine + "    " + GameStatus(game.Id);
     tips.SetToolTip(button, tokenIssue ? TokenIssueTooltip : game.Name + " — " + GameStatus(game.Id));
     button.FlatAppearance.BorderSize = game.Id == selectedGame ? 2 : 0;
@@ -531,7 +565,7 @@ namespace Gfw8PopPuller {
    watchButton.Text = selectedGame > 0 && watchlist.Games.Contains(selectedGame) ? "Unwatch" : "Watch";
    watchButton.BackColor = selectedGame > 0 && watchlist.Games.Contains(selectedGame) ? Violet : Panel;
   }
-  void UpdateFilters() { allButton.BackColor = onlyAvailable ? Panel : Teal; availableButton.BackColor = onlyAvailable ? Teal : Panel; unownedButton.BackColor = onlyUnowned ? Teal : Panel; }
+  void UpdateFilters() { allButton.BackColor = onlyAvailable || onlyMine ? Panel : Teal; availableButton.BackColor = onlyAvailable ? Teal : Panel; unownedButton.BackColor = onlyUnowned ? Teal : Panel; onlyMineButton.BackColor = onlyMine ? Teal : Panel; }
   void UpdateRefresh() {
    if (!hub.Connected) { refresh.Text = "--:--"; return; }
    int seconds = Math.Max(0, (int)Math.Ceiling((hub.NextRefresh - DateTime.UtcNow).TotalSeconds));
@@ -573,6 +607,55 @@ namespace Gfw8PopPuller {
   void Log(string message) { Ui(() => { if (activity.TextLength > 50000) activity.Clear(); activity.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + message + Environment.NewLine); activity.SelectionStart = activity.TextLength; activity.ScrollToCaret(); }); }
   void SaveSettings() { try { preferences.Save(); } catch (Exception e) { Log("Could not save settings: " + e.Message); } }
   void OpenWindow() { if (IsDisposed) return; Opacity = 1; ShowInTaskbar = true; Show(); WindowState = FormWindowState.Normal; Activate(); }
+  async Task CheckForUpdates() {
+   if (checkingUpdate || applyingUpdate) return;
+   checkingUpdate = true;
+   try {
+    var release = await PopPullerUpdater.Check();
+    if (release == null) return;
+    availableUpdate = release;
+    updateButton.Text = "Update v" + release.Version;
+    updateButton.Visible = true;
+    if (announcedUpdate != release.Version.ToString()) {
+     announcedUpdate = release.Version.ToString();
+     Log("Update available: v" + release.Version + ".");
+     tray.BalloonTipTitle = "Update available";
+     tray.ShowBalloonTip(8000, "Update available", "GFW8 Pop Puller v" + release.Version + " is ready to install.", ToolTipIcon.Info);
+    }
+   } catch (Exception e) { Log("Update check unavailable: " + e.Message); }
+   finally { checkingUpdate = false; }
+  }
+  void ShowUpdateDialog(bool resumeHidden) {
+   if (availableUpdate == null || applyingUpdate) return;
+   using (var form = new MetroDialog("Update available", new Size(540, 165))) {
+    var label = new Label { Text = "GFW8 Pop Puller v" + availableUpdate.Version + " is available. Download and restart now?",
+     Location = new Point(20, 20), Size = new Size(500, 80) };
+    var later = new Button { Text = "Later", Location = new Point(270, 112), Width = 112, Height = 34,
+     BackColor = Panel, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, DialogResult = DialogResult.No };
+    var now = new Button { Text = "Update now", Location = new Point(390, 112), Width = 130, Height = 34,
+     BackColor = Teal, ForeColor = Color.White, FlatStyle = FlatStyle.Flat, DialogResult = DialogResult.Yes };
+    form.Body.Controls.AddRange(new Control[] { label, later, now }); form.AcceptButton = now; form.CancelButton = later;
+    if (form.ShowDialog(this) == DialogResult.Yes) { var work = InstallUpdate(resumeHidden); }
+   }
+  }
+  async Task InstallUpdate(bool resumeHidden) {
+   if (availableUpdate == null || applyingUpdate) return;
+   if (scanning || requesting || autoRequesting) {
+    MetroDialog.ShowMessage(this, "Update available", "Please wait for the current receipt request or license scan to finish, then select Update again.");
+    return;
+   }
+   applyingUpdate = true; updateButton.Enabled = false;
+   try {
+    Log("Downloading GFW8 Pop Puller v" + availableUpdate.Version + ".");
+    string downloaded = await PopPullerUpdater.Download(availableUpdate);
+    Log("Update downloaded and verified. Restarting.");
+    PopPullerUpdater.StartApply(downloaded, Application.ExecutablePath, Process.GetCurrentProcess().Id, resumeHidden, availableUpdate.Sha256);
+    exiting = true; Close();
+   } catch (Exception e) {
+    Log("Update failed: " + e.Message);
+    MetroDialog.ShowMessage(this, "Update failed", e.Message);
+   } finally { applyingUpdate = false; if (!IsDisposed) updateButton.Enabled = true; }
+  }
   void ShowHelp() {
    const string helpText =
     "A pop.bin (proof-of-purchase) file is a game license. It lasts for 24 hours and is not tied to an account. It does not bypass the Store startup check. Trial and Full licenses work the same way.\r\n\r\n" +

@@ -457,8 +457,9 @@
     },
     {
       "index": 42,
-      "name": "Harvest",
-      "legacy_store_guid": "fe3ba733-5cc6-4e1f-acfe-75f1c09699de",
+      "name": "The Harvest",
+      "store_product_id": "9WZDNCRFJB5W",
+      "legacy_store_guid": "acdb7255-8ba8-4fd7-b853-7d9cdf0634d1",
       "package_family_name": "Microsoft.TheHarvestHD_8wekyb3d8bbwe",
       "legacy_xbox_title_id": 1297290235,
       "tokenRoute": "experimental",

@@ -26,3 +26,4 @@ function Get-PublicWamTicket {
  if (@($response.ResponseData).Count -ne 1 -or -not $response.ResponseData[0].Token) { throw 'Windows returned an unexpected token response.' }
  return $response.ResponseData[0].Token
 }
+
