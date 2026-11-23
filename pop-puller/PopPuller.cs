@@ -249,9 +249,18 @@ namespace Gfw8PopPuller {
   static readonly Color Teal = Color.FromArgb(0, 158, 171);
   static readonly Color Violet = Color.FromArgb(135, 9, 213);
   static readonly Color Muted = Color.FromArgb(57, 42, 66);
+  static readonly Color TokenIssueRed = Color.FromArgb(156, 39, 50);
+  static readonly HashSet<int> KnownTokenIssueGames = new HashSet<int> { 71, 72 };
+  const string TokenIssueTooltip = "Known Xbox token issue\n" +
+   "This game can serve a valid pop.bin, but Xbox Live\n" +
+   "does not issue a valid token.\n\n" +
+   "Xbox sign-in and achievement will not work.\n" +
+   "You can still request a pop.bin in case Microsoft\n" +
+   "fixes this in the future.";
 
   public MainForm(string runtime, bool minimized) {
    preferences = Preferences.Load(); backend = new ReceiptBackend(runtime); hub = new HubClient(preferences, backend);
+   tips.AutoPopDelay = 20000;
    bool trayStartup = minimized && preferences.StartAtLogin && preferences.CloseToTray;
    Text = "GFW8 Pop Puller"; BackColor = Background; ForeColor = Color.White;
    Font = new Font("Segoe UI", 10); FormBorderStyle = FormBorderStyle.None;
@@ -506,10 +515,11 @@ namespace Gfw8PopPuller {
     if ((onlyAvailable && !lit) || (onlyUnowned && hub.IsOwned(game.Id)) || game.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) < 0) continue;
     var button = game.Button;
     int count; game.ProviderCount = lit && providerCounts.TryGetValue(game.Id, out count) ? count : 0;
-    button.BackColor = lit && hub.IsOwned(game.Id) ? Color.FromArgb(24, 91, 175) : lit ? Color.FromArgb(7, 93, 103) : lastSeen.ContainsKey(game.Id) ? Color.FromArgb(130, 69, 26) : Muted;
-    button.ForeColor = lit ? Color.White : Color.FromArgb(210, 198, 215);
-    button.Text = (watchlist.Games.Contains(game.Id) ? "★  " : "●  ") + game.Name + Environment.NewLine + "    " + GameStatus(game.Id);
-    tips.SetToolTip(button, game.Name + " — " + GameStatus(game.Id));
+    bool tokenIssue = KnownTokenIssueGames.Contains(game.Id);
+    button.BackColor = tokenIssue ? TokenIssueRed : lit && hub.IsOwned(game.Id) ? Color.FromArgb(24, 91, 175) : lit ? Color.FromArgb(7, 93, 103) : lastSeen.ContainsKey(game.Id) ? Color.FromArgb(130, 69, 26) : Muted;
+    button.ForeColor = tokenIssue || lit ? Color.White : Color.FromArgb(210, 198, 215);
+    button.Text = (watchlist.Games.Contains(game.Id) ? "★  " : tokenIssue ? "⚠  " : "●  ") + game.Name + Environment.NewLine + "    " + GameStatus(game.Id);
+    tips.SetToolTip(button, tokenIssue ? TokenIssueTooltip : game.Name + " — " + GameStatus(game.Id));
     button.FlatAppearance.BorderSize = game.Id == selectedGame ? 2 : 0;
     button.FlatAppearance.BorderColor = Color.FromArgb(255, 224, 149);
     gameList.Controls.Add(button);
