@@ -123,6 +123,10 @@ async function leaderboardHtml() {
 }
 assert.match(await leaderboardHtml(), /Verified pops served/);
 assert.match(await leaderboardHtml(), /All-time high · unique games available/);
+const privateGames = await (await fetch(base + '/leaderboard/games', { headers: { Cookie: leaderboardCookie } })).text();
+assert.equal((privateGames.match(/href="\/leaderboard\/games\/\d+"/g) || []).length, 108);
+assert.match(privateGames, /AC Pirates/);
+assert.match(await (await fetch(base + '/leaderboard/games')).text(), /Enter your private leaderboard password/);
 const issuedOnlyLabel = 'synthetic unused ' + Date.now().toString(36);
 await issue(issuedOnlyLabel);
 assert.equal((await leaderboardHtml()).includes(issuedOnlyLabel), false);
@@ -131,6 +135,9 @@ if (localExplorer) {
   const historical = await leaderboardHtml();
   assert.ok(historical.includes(`<strong>${issuedOnlyLabel}</strong></td><td>0</td><td>—</td>`));
   assert.match(historical, /21 Nov 2026/);
+  const oldGame = await (await fetch(base + '/leaderboard/games/4', { headers: { Cookie: leaderboardCookie } })).text();
+  assert.match(oldGame, /Last recorded with this game/);
+  assert.ok(oldGame.includes(issuedOnlyLabel));
 }
 await rejected('GFW8H-' + 'A'.repeat(43));
 
@@ -154,6 +161,19 @@ assert.match(availability.peaks.games.day, /^\d{4}-\d{2}-\d{2}$/);
 assert.match(availability.lastSeen['4'], /^\d{4}-\d{2}-\d{2}$/);
 assert.match(availability.lastSeen['5'], /^\d{4}-\d{2}-\d{2}$/);
 assert.equal(JSON.stringify(availability).includes('synthetic A'), false);
+const codesForOffers = (await (await fetch(base + '/admin/codes', { headers: { Authorization: 'Bearer ' + admin } })).json()).codes;
+const contributorId = codesForOffers.find(row => row.label === labelA).id;
+const contributorUrl = '/leaderboard/offers/' + contributorId;
+const privateContributor = await (await fetch(base + contributorUrl, { headers: { Cookie: leaderboardCookie } })).text();
+assert.match(privateContributor, /Games offered now/);
+assert.match(privateContributor, /AC Pirates/);
+assert.match(privateContributor, /Adera/);
+assert.match(await (await fetch(base + contributorUrl)).text(), /Enter your private leaderboard password/);
+assert.equal((await (await fetch(base + contributorUrl)).text()).includes(labelA), false);
+const privateGame = await (await fetch(base + '/leaderboard/games/4', { headers: { Cookie: leaderboardCookie } })).text();
+assert.match(privateGame, /Offering now/);
+assert.ok(privateGame.includes(labelA));
+assert.equal((await (await fetch(base + '/leaderboard/games/4')).text()).includes(labelA), false);
 const initialInventory = await ownerInventory(labelA);
 if (initialInventory) {
   assert.equal(initialInventory.game_ids, '[4,5]');

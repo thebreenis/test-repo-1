@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import catalogue from '../../../backend/games.json';
-import { clearSessionCookie, htmlResponse, leaderboardPage, loginPage, makeSession, readPassword, sessionCookie, validSession } from './leaderboard.js';
+import { clearSessionCookie, contributorOffersPage, gameOffersPage, gamesPage, htmlResponse, leaderboardPage, loginPage, makeSession, readPassword, sessionCookie, validSession } from './leaderboard.js';
 
 const encoder = new TextEncoder();
 const MAX_MESSAGE = 150000;
@@ -38,6 +38,27 @@ export default {
       if (!env.LEADERBOARD_KEY) return reply({ error: 'Leaderboard unavailable.' }, 503);
       if (!await validSession(request, env.LEADERBOARD_KEY)) return htmlResponse(loginPage());
       return htmlResponse(leaderboardPage(await env.HUB.getByName('private-group').leaderboard()));
+    }
+    const offersPath = /^\/leaderboard\/offers\/([0-9a-f-]{36})$/.exec(path);
+    if (offersPath && request.method === 'GET') {
+      if (!env.LEADERBOARD_KEY) return reply({ error: 'Leaderboard unavailable.' }, 503);
+      if (!await validSession(request, env.LEADERBOARD_KEY)) return htmlResponse(loginPage());
+      const data = await env.HUB.getByName('private-group').leaderboard();
+      const contributor = data.rows.find(row => row.id === offersPath[1]);
+      return contributor ? htmlResponse(contributorOffersPage(contributor)) : reply({ error: 'Not found.' }, 404);
+    }
+    if (path === '/leaderboard/games' && request.method === 'GET') {
+      if (!env.LEADERBOARD_KEY) return reply({ error: 'Leaderboard unavailable.' }, 503);
+      if (!await validSession(request, env.LEADERBOARD_KEY)) return htmlResponse(loginPage());
+      return htmlResponse(gamesPage(await env.HUB.getByName('private-group').leaderboard()));
+    }
+    const gamePath = /^\/leaderboard\/games\/([0-9]{1,3})$/.exec(path);
+    if (gamePath && request.method === 'GET') {
+      if (!env.LEADERBOARD_KEY) return reply({ error: 'Leaderboard unavailable.' }, 503);
+      if (!await validSession(request, env.LEADERBOARD_KEY)) return htmlResponse(loginPage());
+      const gameId = Number(gamePath[1]);
+      if (!validGame(gameId)) return reply({ error: 'Not found.' }, 404);
+      return htmlResponse(gameOffersPage(await env.HUB.getByName('private-group').leaderboard(), gameId));
     }
     if (path === '/leaderboard/login' && request.method === 'POST') {
       if (!env.LEADERBOARD_KEY) return reply({ error: 'Leaderboard unavailable.' }, 503);
@@ -209,8 +230,18 @@ export class Hub extends DurableObject {
       if (!best) mostServed.set(game.code_id, { game: game.game, count: game.served, ties: 0 });
       else if (game.served === best.count) best.ties++;
     }
-    const rows = this.ctx.storage.sql.exec('SELECT c.id,c.label,s.code_id AS tracked_code,s.served,s.connected_ms,i.first_recorded FROM codes c LEFT JOIN leaderboard_stats s ON s.code_id=c.id LEFT JOIN owner_inventory i ON i.code_id=c.id WHERE s.code_id IS NOT NULL OR i.code_id IS NOT NULL').toArray()
-      .map(row => ({
+    const namesFor = ids => ids.map(id => gameNames.get(id)).filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const lastRecorded = json => {
+      try { const ids = JSON.parse(json || '[]'); return Array.isArray(ids) ? [...new Set(ids.filter(validGame))] : []; }
+      catch { return []; }
+    };
+    const rows = this.ctx.storage.sql.exec('SELECT c.id,c.label,s.code_id AS tracked_code,s.served,s.connected_ms,i.first_recorded,i.last_changed,i.game_ids FROM codes c LEFT JOIN leaderboard_stats s ON s.code_id=c.id LEFT JOIN owner_inventory i ON i.code_id=c.id WHERE s.code_id IS NOT NULL OR i.code_id IS NOT NULL').toArray()
+      .map(row => {
+        const offeredGameIds = online.has(row.id) && online.get(row.id).jwk && now - online.get(row.id).last < OFFER_TTL
+          ? online.get(row.id).games.filter(validGame) : [];
+        const lastRecordedGameIds = lastRecorded(row.game_ids);
+        return {
+        id: row.id,
         label: row.label,
         served: row.served || 0,
         mostServedGame: mostServed.has(row.id) ? {
@@ -220,10 +251,15 @@ export class Hub extends DurableObject {
         } : null,
         connectedMs: row.tracked_code ? row.connected_ms + (sessions.has(row.id) ? now - sessions.get(row.id) : 0) : null,
         online: online.has(row.id),
-        offeredGames: online.has(row.id) && now - online.get(row.id).last < OFFER_TTL ? online.get(row.id).games.length : 0,
+        offeredGameIds,
+        offeredGameNames: namesFor(offeredGameIds),
+        lastRecordedGameIds,
+        lastRecordedGameNames: namesFor(lastRecordedGameIds),
+        lastInventoryChange: row.last_changed,
         firstInventory: row.first_recorded
-      })).sort((a, b) => b.served - a.served || (b.connectedMs || 0) - (a.connectedMs || 0) || a.label.localeCompare(b.label));
-    return { rows, totalServed: rows.reduce((sum, row) => sum + row.served, 0), onlineCount: sockets.length, peaks: this.peaks() };
+      } }).sort((a, b) => b.served - a.served || (b.connectedMs || 0) - (a.connectedMs || 0) || a.label.localeCompare(b.label));
+    return { rows, games: catalogue.games.map(game => ({ id: game.index, name: game.name })),
+      totalServed: rows.reduce((sum, row) => sum + row.served, 0), onlineCount: sockets.length, peaks: this.peaks() };
   }
 
   sockets() { return this.ctx.getWebSockets().filter(ws => ws.readyState === 1); }
