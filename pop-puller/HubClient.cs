@@ -23,6 +23,7 @@ namespace Gfw8PopPuller {
   HashSet<int> owned = new HashSet<int>();
   HashSet<int> available = new HashSet<int>();
   TaskCompletionSource<Dictionary<string,object>> waiting;
+  TaskCompletionSource<Dictionary<string,object>> leaderboardWaiting;
   int waitingGame;
   bool connected;
   DateTime nextRefresh = DateTime.MinValue;
@@ -85,7 +86,10 @@ namespace Gfw8PopPuller {
   public void Stop() {
    stopping.Cancel();
    try { if (socket != null) socket.Abort(); } catch { }
-   lock (gate) if (waiting != null) waiting.TrySetException(new IOException("Disconnected from hub."));
+   lock (gate) {
+    if (waiting != null) waiting.TrySetException(new IOException("Disconnected from hub."));
+    if (leaderboardWaiting != null) leaderboardWaiting.TrySetException(new IOException("Disconnected from hub."));
+   }
   }
   public async Task RefreshInventory(bool reportEvenIfUnchanged = false) {
    bool changed = false;
@@ -185,7 +189,10 @@ namespace Gfw8PopPuller {
      if (active != null) { try { active.Abort(); } catch { } active.Dispose(); }
      if (Object.ReferenceEquals(socket, active)) socket = null;
      SetConnected(false);
-     lock (gate) if (waiting != null) waiting.TrySetException(new IOException("Hub disconnected during request."));
+     lock (gate) {
+      if (waiting != null) waiting.TrySetException(new IOException("Hub disconnected during request."));
+      if (leaderboardWaiting != null) leaderboardWaiting.TrySetException(new IOException("Hub disconnected during request."));
+     }
     }
     await Delay(4000);
    }
@@ -217,7 +224,7 @@ namespace Gfw8PopPuller {
       result = await active.ReceiveAsync(new ArraySegment<byte>(buffer), stopping.Token);
       if (result.MessageType == WebSocketMessageType.Close) return;
       content.Write(buffer, 0, result.Count);
-      if (content.Length > 160000) throw new IOException("Hub message exceeded limit.");
+      if (content.Length > 524288) throw new IOException("Hub message exceeded limit.");
      } while (!result.EndOfMessage);
      string text = Encoding.UTF8.GetString(content.ToArray());
      if (text == "pong") continue;
@@ -227,6 +234,12 @@ namespace Gfw8PopPuller {
   }
   async Task Handle(Dictionary<string,object> message) {
    string type = Wire.Text(message, "type");
+   if (type == "leaderboard") {
+    TaskCompletionSource<Dictionary<string,object>> target;
+    lock (gate) target = leaderboardWaiting;
+    if (target != null) target.TrySetResult(Wire.Map(Wire.Get(message, "data")));
+    return;
+   }
    if (type == "welcome") {
     if (Wire.Get(message, "needsInitialScan") is bool && (bool)message["needsInitialScan"]) {
      string code = preferences.Code;
@@ -352,6 +365,20 @@ namespace Gfw8PopPuller {
     try { await Send(new { type = "reject", requestId = id }); }
     catch { target.TrySetException(new IOException("Received receipt failed validation: " + failure.Message)); }
    }
+  }
+  public async Task<Dictionary<string,object>> RequestLeaderboard() {
+   TaskCompletionSource<Dictionary<string,object>> target;
+   lock (gate) {
+    if (!connected) throw new IOException("Connect to the hub to view the leaderboard.");
+    if (leaderboardWaiting != null) throw new IOException("Leaderboard refresh is already in progress.");
+    leaderboardWaiting = target = new TaskCompletionSource<Dictionary<string,object>>();
+   }
+   try {
+    await Send(new { type = "leaderboardRequest" });
+    if (await Task.WhenAny(target.Task, Task.Delay(12000, stopping.Token)) != target.Task)
+     throw new TimeoutException("The leaderboard did not respond. Try Refresh.");
+    return await target.Task;
+   } finally { lock (gate) if (Object.ReferenceEquals(leaderboardWaiting, target)) leaderboardWaiting = null; }
   }
   public async Task<Dictionary<string,object>> Request(int gameId) {
    TaskCompletionSource<Dictionary<string,object>> target;

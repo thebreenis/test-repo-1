@@ -238,7 +238,8 @@ namespace Gfw8PopPuller {
   readonly TextBox search = new TextBox();
   readonly FlowLayoutPanel gameList = new FlowLayoutPanel();
   readonly RichTextBox activity = new RichTextBox();
-  readonly Button getPop, openPopFolder, watchButton, scanButton, allButton, availableButton, unownedButton, onlyMineButton, codeButton;
+  readonly Button getPop, openPopFolder, watchButton, scanButton, allButton, availableButton, unownedButton, onlyMineButton, codeButton, leaderboardButton;
+  LeaderboardWindow leaderboardWindow;
   readonly NotifyIcon tray;
   readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
   readonly ToolTip tips = new ToolTip();
@@ -259,7 +260,7 @@ namespace Gfw8PopPuller {
   static readonly Color Violet = Color.FromArgb(135, 9, 213);
   static readonly Color Muted = Color.FromArgb(57, 42, 66);
   static readonly Color TokenIssueRed = Color.FromArgb(156, 39, 50);
-  static readonly HashSet<int> KnownTokenIssueGames = new HashSet<int> { 71, 72 };
+  static readonly HashSet<int> KnownTokenIssueGames = new HashSet<int> { 71, 72, 73 };
   const string TokenIssueTooltip = "Known Xbox token issue!\n" +
    "This game can serve a valid pop.bin, but Xbox Live\n" +
    "does not issue a valid token.\n\n" +
@@ -296,6 +297,26 @@ namespace Gfw8PopPuller {
    status.Controls.Add(HubStatusTile(), 0, 0);
    var availabilityTile = StatusTile("AVAILABILITY", availability, Color.FromArgb(105, 34, 147), "0 of 108 games");
    AddPeakLabel(availabilityTile, availabilityPeak);
+   leaderboardButton = Action("Leaderboard", Panel);
+   leaderboardButton.Enabled = false;
+   leaderboardButton.Dock = DockStyle.None; leaderboardButton.Size = new Size(142, 24);
+   leaderboardButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+   leaderboardButton.Location = new Point(16, 84);
+   leaderboardButton.Click += delegate {
+    if (!hub.Connected) { MetroDialog.ShowMessage(this, "Leaderboard", "Connect to the hub to view the leaderboard."); return; }
+    if (leaderboardWindow != null && !leaderboardWindow.IsDisposed) {
+     if (leaderboardWindow.WindowState == FormWindowState.Minimized) leaderboardWindow.WindowState = FormWindowState.Normal;
+     leaderboardWindow.Activate(); return;
+    }
+    leaderboardWindow = new LeaderboardWindow(hub, games.ToDictionary(game => game.Id, game => game.Name));
+    leaderboardWindow.FormClosed += delegate { leaderboardWindow = null; };
+    leaderboardWindow.Show(this);
+   };
+   availabilityTile.Controls.Add(leaderboardButton);
+   availabilityTile.Resize += delegate {
+    leaderboardButton.Location = new Point(Math.Max(16, availabilityTile.ClientSize.Width - leaderboardButton.Width - 16),
+     Math.Max(0, availabilityTile.ClientSize.Height - leaderboardButton.Height - 2));
+   };
    var refreshTile = StatusTile("REFRESH", refresh, Color.FromArgb(59, 22, 77), "--:--");
    status.Controls.Add(availabilityTile, 1, 0);
    status.Controls.Add(refreshTile, 2, 0);
@@ -398,6 +419,7 @@ namespace Gfw8PopPuller {
    hub.ConnectionChanged += value => Ui(() => {
     if (value) { everConnected = true; connectionAttemptSince = DateTime.MinValue; }
     else if (connectionAttemptSince == DateTime.MinValue) connectionAttemptSince = DateTime.UtcNow;
+    leaderboardButton.Enabled = value;
     UpdateHubStatus();
    });
    hub.AvailabilityChanged += ids => Ui(() => {
@@ -661,7 +683,7 @@ namespace Gfw8PopPuller {
     "A pop.bin (proof-of-purchase) file is a game license. It lasts for 24 hours and is not tied to an account. It does not bypass the Store startup check. Trial and Full licenses work the same way.\r\n\r\n" +
     "When a game attempts to sign in to a profile, it sends the pop.bin file to Xbox Live. If Xbox Live validates it, the service returns a token. The token lets the profile authenticate to the game, show presence, and unlock achievements.\r\n\r\n" +
     "Tokens are tied to an account and cannot be used for other games. They last for 4 hours. As long as the pop.bin file is within its 24-hour validity period, the token will continue to refresh.\r\n\r\n" +
-    "A valid pop.bin file does not guarantee a valid token. For example, Pac-Man VAIO and Pac-Man Toshiba fail during token issuance. Only Microsoft can fix that issue.\r\n\r\n" +
+    "A valid pop.bin file does not guarantee a valid token. For example, Pac-Man VAIO, Pac-Man Toshiba, and Pinball FX2 fail during token issuance. Only Microsoft can fix that issue.\r\n\r\n" +
     "Pop Puller scans Full and Trial game licenses available through Microsoft Store on this Windows profile. When you sign in to multiple Microsoft accounts in Store, their eligible games can appear together in one scan. Pop Puller cannot identify which account owns each game, so it shows them as one combined collection. An invite's first hub connection automatically starts a full 108-game scan. To include another account's games later, sign in to it through Microsoft Store, then select Scan My Licenses.\r\n\r\n" +
     "Watch a game to request a pop.bin automatically when it becomes available. Get pop.bin and Watchlist downloads are placed in the game's LocalState\\Microsoft.Xbox folder, even if the game is not installed yet. Pop Puller also keeps a copy in Downloads and notifies you when a watched pop expires. A failed request can be retried through another available contributor.\r\n\r\n" +
     "Get pop.bin checks the current file first. If more than 20 hours remain, wait or delete it manually before requesting another. From 12 to 20 hours, Pop Puller asks whether you want a fresh one. With less than 12 hours left, it requests a fresh pop without a prompt.";

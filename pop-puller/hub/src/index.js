@@ -399,6 +399,18 @@ export class Hub extends DurableObject {
       if (message.type === 'initialScanComplete') {
         this.ctx.storage.sql.exec('UPDATE codes SET initial_scan_done=1 WHERE id=?', self.codeId);
         this.send(ws, { type: 'initialScanAcknowledged' });
+      } else if (message.type === 'leaderboardRequest') {
+        const board = this.leaderboard();
+        this.send(ws, { type: 'leaderboard', data: {
+          totalServed: board.totalServed, onlineCount: board.onlineCount, peaks: board.peaks,
+          rows: board.rows.map(row => ({
+            id: row.id, label: row.label, served: row.served,
+            mostServedGame: row.mostServedGame, connectedMs: row.connectedMs,
+            online: row.online, offeredGameIds: row.offeredGameIds,
+            lastRecordedGameIds: row.lastRecordedGameIds,
+            firstInventory: row.firstInventory, lastInventoryChange: row.lastInventoryChange
+          }))
+        } });
       } else if (message.type === 'offer') {
         if (!validJwk(message.jwk) || !Array.isArray(message.gameIds) || message.gameIds.length > 108 ||
           !message.gameIds.every(validGame)) throw new Error('Invalid offer.');
